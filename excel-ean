@@ -1,0 +1,132 @@
+import pandas as pd
+from barcode import Code128
+from barcode.writer import ImageWriter
+from PIL import Image, ImageDraw, ImageFont
+import os
+from io import BytesIO
+from openpyxl import load_workbook
+from openpyxl.drawing.image import Image as ExcelImage
+import textwrap
+
+# Cargar el archivo Excel y forzar la columna 'codigo barras' como texto
+archivo_excel = r"C:\Users\Mercadeo03\Downloads\Tabla Codigo de Barras\3637       29-11-2024 inpeccion - copia.xlsx"
+datos = pd.read_excel(archivo_excel, dtype={  # Especificar tipos de datos
+    'codigo barras': str  # Forzar la columna de códigos de barras como texto
+})
+
+# Verificar encabezados
+print("Encabezados encontrados:", datos.columns)
+
+# Nombres de las columnas
+columna_codigo_barras = 'codigo barras'  # Columna con el valor para el código de barras
+columna_descripcion = 'Descriptions'  # Columna A
+columna_codigo_producto = 'Code of products'  # Columna B
+
+# Verificar que las columnas existen
+for columna in [columna_codigo_barras, columna_descripcion, columna_codigo_producto]:
+    if columna not in datos.columns:
+        raise ValueError(f"La columna '{columna}' no existe. Revisá los encabezados del archivo.")
+
+# Filtrar filas con datos válidos
+datos = datos[datos[columna_codigo_barras].notna()]
+
+# Crear carpeta de salida
+carpeta_salida = r"C:\Users\Mercadeo03\Downloads\Tabla Codigo de Barras\codigos"
+os.makedirs(carpeta_salida, exist_ok=True)
+
+# Definir dimensiones finales en píxeles (50 x 30 mm a 300 DPI)
+ancho_final = 590  # Píxeles para 50 mm a 300 DPI
+alto_final = 354   # Píxeles para 30 mm a 300 DPI
+
+# Fuente para el texto (25px de tamaño para la columna de descripción y 30px para la de código de producto)
+try:
+    fuente_path = "C:/Windows/Fonts/Arial.ttf"  # Ruta a la fuente en Windows
+    fuente_codigo_producto = ImageFont.truetype(fuente_path, 30)  # Fuente de 30px para Código de productos
+    fuente_descripcion = ImageFont.truetype(fuente_path, 25)  # Fuente de 25px para la descripción
+except IOError:
+    print("No se encontró la fuente especificada. Usando la fuente predeterminada.")
+    fuente_codigo_producto = ImageFont.load_default()  # Usar la fuente predeterminada de Pillow para Código de productos
+    fuente_descripcion = ImageFont.load_default()  # Usar la fuente predeterminada de Pillow para la descripción
+
+# Coeficientes de ajuste para convertir píxeles a medidas de Excel
+excel_col_width_ratio = 7 / 64  # Relación píxeles a ancho de columna de Excel
+excel_row_height_ratio = 0.75  # Relación píxeles a alto de fila de Excel
+
+# Abrir el archivo Excel para edición
+wb = load_workbook(archivo_excel)
+ws = wb.active
+
+# Agregar encabezado para la columna de imágenes
+columna_imagen = 'Imagen'
+columna_destino = ws.max_column + 1
+ws.cell(row=1, column=columna_destino, value=columna_imagen)
+
+# Generar códigos de barras con texto
+for index, fila in datos.iterrows():
+    try:
+        # Obtener valores de las columnas
+        valor_codigo_barras = str(fila[columna_codigo_barras]).strip()  # Leer como texto y eliminar espacios innecesarios
+        descripcion = str(fila[columna_descripcion])[:50]  # Truncar a 50 caracteres
+        codigo_producto = str(fila[columna_codigo_producto])
+
+        # Reemplazar delimitadores por asterisco (*) en lugar de ^A y ^C
+        valor_codigo_barras_completo = f" {valor_codigo_barras} "  # Usar asteriscos en lugar de ^A y ^C
+        
+        # Generar el código de barras en memoria
+        buffer = BytesIO()
+        codigo_barra = Code128(valor_codigo_barras_completo, writer=ImageWriter())
+        codigo_barra.write(buffer)
+        buffer.seek(0)
+        
+        # Cargar la imagen del código de barras desde el buffer
+        codigo_imagen = Image.open(buffer)
+        
+        # Crear nueva imagen con el tamaño final
+        imagen_final = Image.new("RGB", (ancho_final, alto_final), "white")
+        
+        # Redimensionar el código de barras para que ocupe la mayor parte del espacio
+        codigo_redimensionado = codigo_imagen.resize((ancho_final - 40, alto_final - 100))
+        imagen_final.paste(codigo_redimensionado, (20, 50))  # Centramos dejando espacio para texto
+        
+        # Dibujar el texto en la nueva imagen
+        draw = ImageDraw.Draw(imagen_final)
+
+        # Usar textwrap para ajustar el texto y evitar overflow, permitiendo que el texto se divida en 2 líneas
+        descripcion_wrapped = textwrap.fill(descripcion, width=30)  # Ajustar el texto para que ocupe hasta 30 caracteres por línea
+        codigo_producto_wrapped = textwrap.fill(codigo_producto, width=30)
+
+        # Centrar el texto superior (descripción) en dos renglones
+        bbox_descripcion = draw.textbbox((0, 0), descripcion_wrapped, font=fuente_descripcion)
+        texto_ancho_descripcion = bbox_descripcion[2] - bbox_descripcion[0]
+        posicion_x_descripcion = (ancho_final - texto_ancho_descripcion) // 2
+        draw.text((posicion_x_descripcion, 5), descripcion_wrapped, font=fuente_descripcion, fill="black")  # Texto centrado arriba
+
+        # Centrar el texto inferior (código de producto) con un margen de 15px desde el borde inferior
+        bbox_codigo = draw.textbbox((0, 0), codigo_producto_wrapped, font=fuente_codigo_producto)
+        texto_ancho_codigo = bbox_codigo[2] - bbox_codigo[0]
+        posicion_x_codigo = (ancho_final - texto_ancho_codigo) // 2
+        posicion_y_codigo = alto_final - 30 - 15  # Margen de 15px desde el borde inferior
+        draw.text((posicion_x_codigo, posicion_y_codigo), codigo_producto_wrapped, font=fuente_codigo_producto, fill="black")  # Código centrado abajo
+        
+        # Guardar la imagen final
+        nombre_imagen = f"{carpeta_salida}/codigo_{index + 1}.png"
+        imagen_final.save(nombre_imagen, dpi=(300, 300))
+        print(f"Código de barras generado: {nombre_imagen}")
+        
+        # Agregar la imagen al Excel
+        img = ExcelImage(nombre_imagen)
+        celda = f"{chr(64 + columna_destino)}{index + 2}"  # Columna y fila destino
+        ws.add_image(img, celda)
+        
+        # Ajustar el tamaño de la celda
+        ws.column_dimensions[chr(64 + columna_destino)].width = ancho_final * excel_col_width_ratio
+        ws.row_dimensions[index + 2].height = alto_final * excel_row_height_ratio
+        
+        # Cerrar el buffer
+        buffer.close()
+    except Exception as e:
+        print(f"Error con la fila {index + 1}: {e}")
+
+# Guardar el archivo Excel con las imágenes
+wb.save(archivo_excel)
+print("¡Códigos de barras generados y agregados al Excel exitosamente!")
